@@ -1,0 +1,60 @@
+#assumes raspi external client connect is wlan0
+
+#!/bin/bash
+HotSpotInterface="wlan0"
+InternetInterface="wlan1"
+ssh=22
+ManagementInterface="eth0"
+http=80
+dns=53
+localsubnet="192.168.1.0/24"
+otherTunnel="ss0"
+
+#get ssh port - if returns nothing its port 22
+ssh=$(grep -E "^Port" /etc/ssh/sshd_config)
+ssh="${ssh:-22}"
+
+#get HotSpot Interface
+#HotSpotInterface=$(wpa_cli status | grep "Selected interface"| awk '{print $3}'| tr -d \')
+
+
+
+#drop garbage
+iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+
+#add specialty ports here
+iptables -A INPUT -p tcp -m tcp --dport 50000 -j ACCEPT
+iptables -A OUTPUT -p tcp -m tcp --dport 50000 -j ACCEPT
+
+#allow internal lo interface
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+#Allow dns lookups
+iptables -A OUTPUT -p udp -m udp --dport $dns -j ACCEPT
+
+#allow anything inbound on eth1-management interface
+iptables -A INPUT -i $ManagementInterface -p all -j ACCEPT
+
+#Any FORWARDED packets from wlan0 will be dropped - MAGIC KILL SWITCH HAPPENS HERE
+#only packets that ***PASS THRU TUNNEL*** will be accepted
+#This section blocks anything attempting to go directly from hotspot to internet
+iptables -P FORWARD DROP
+
+#allow subnet connections from anywhere for port $ssh and $http
+iptables -A INPUT -s $localsubnet -p tcp -m tcp --dport $ssh -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+iptables -A INPUT -s $localsubnet -p tcp -m tcp --dport $ssh -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+iptables -A INPUT -s $localsubnet -p tcp -m tcp --dport $http -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+iptables -A INPUT -s $localsubnet -p tcp -m tcp --dport $http -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+iptables -A OUTPUT -s $localsubnet -p tcp -m tcp --sport $ssh -m conntrack --ctstate ESTABLISHED -j ACCEPT
+iptables -A OUTPUT -s $localsubnet -p tcp -m tcp --sport $ssh -m conntrack --ctstate ESTABLISHED -j ACCEPT
+
+#POSTROUTING masquerade rules
+iptables -t nat -A POSTROUTING -j MASQUERADE
+iptables -t nat -A POSTROUTING -s $localsubnet ! -d $localsubnet -j MASQUERADE
+iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE
+iptables -t nat -A POSTROUTING -o wg0 -j MASQUERADE
+iptables -t nat -A POSTROUTING -o $otherTunnel -j MASQUERADE
+
+#to persist iptables
+netfilter-persistent save
